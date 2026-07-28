@@ -1,17 +1,18 @@
 import numpy as np
 from scipy.stats import poisson
+import streamlit as st
 
 class FootballPredictionModel:
-    def __init__(self, rho=0.05, home_advantage=1.2):
+    def __init__(self, rho=0.05, home_advantage=1.10):
         """
-        rho: Dixon-Coles adjustment factor for low scorelines.
-        home_advantage: Standard home ground multiplier (e.g., 1.2x baseline).
+        rho: Dixon-Coles adjustment parameter
+        home_advantage: Standard home team multiplier
         """
         self.rho = rho
         self.gamma = home_advantage
 
     def dixon_coles_adjustment(self, x, y, lambda_h, mu_a):
-        """Applies Dixon-Coles adjustment tau(x,y) to fix independence flaw."""
+        """Applies Dixon-Coles adjustment for low-scoring match outcomes."""
         if x == 0 and y == 0:
             return 1 - lambda_h * mu_a * self.rho
         elif x == 0 and y == 1:
@@ -20,90 +21,88 @@ class FootballPredictionModel:
             return 1 + lambda_h * self.rho
         elif x == 1 and y == 1:
             return 1 - self.rho
-        else:
-            return 1.0
+        return 1.0
 
-    def predict_match_events(self, team_h_stats, team_a_stats, max_events=8):
-        """
-        Accepts data dictionaries for both teams containing estimated event rates.
-        """
-        # 1. Calculate Expected Goals (lambda for Home, mu for Away)
-        lambda_goals = team_h_stats['attack_goals'] * team_a_stats['defense_goals'] * self.gamma
-        mu_goals = team_a_stats['attack_goals'] * team_h_stats['defense_goals']
-        
-        # 2. Build Scoreline Probability Matrix (Dixon-Coles)
-        score_matrix = np.zeros((max_events, max_events))
-        for x in range(max_events):
-            for y in range(max_events):
-                p_x = poisson.pmf(x, lambda_goals)
-                p_y = poisson.pmf(y, mu_goals)
-                tau = self.dixon_coles_adjustment(x, y, lambda_goals, mu_goals)
-                score_matrix[x, y] = p_x * p_y * tau
-                
-        # Normalize matrix to ensure probabilities sum to 1
-        score_matrix /= np.sum(score_matrix)
+    def predict_match_events(self, home_stats, away_stats):
+        # Calculate expected Poisson parameters (lambdas)
+        lambda_goals_home = home_stats['attack_goals'] * away_stats['defense_goals'] * self.gamma
+        mu_goals_away = away_stats['attack_goals'] * home_stats['defense_goals']
 
-        # 3. Calculate Match Outcome Probabilities (1 / X / 2)
-        prob_home_win = np.sum(np.tril(score_matrix, -1))
-        prob_draw = np.sum(np.diag(score_matrix))
-        prob_away_win = np.sum(np.triu(score_matrix, 1))
+        lambda_corners_home = home_stats['attack_corners'] * (away_stats['defense_corners'] / 5.0) * self.gamma
+        mu_corners_away = away_stats['attack_corners'] * (home_stats['defense_corners'] / 5.0)
 
-        # 4. Get Top 3 Correct Scores
-        top_scores = []
-        # Flatten the matrix and get the indices of the top 3 highest probabilities
-        flat_indices = np.argsort(score_matrix.ravel())[::-1][:3]
-        for idx in flat_indices:
-            x, y = np.unravel_index(idx, score_matrix.shape)
-            prob = score_matrix[x, y] * 100
-            top_scores.append((f"{x}-{y}", f"{prob:.2f}%"))
+        lambda_sot_home = home_stats['attack_sot'] * (away_stats['defense_sot'] / 4.0) * self.gamma
+        mu_sot_away = away_stats['attack_sot'] * (home_stats['defense_sot'] / 4.0)
 
-        # 5. Model Secondary Events: Corners and Shots on Target
-        lambda_corners = team_h_stats['attack_corners'] * team_a_stats['defense_corners'] * 1.1 
-        mu_corners = team_a_stats['attack_corners'] * team_h_stats['defense_corners']
-        
-        lambda_sot = team_h_stats['attack_sot'] * team_a_stats['defense_sot'] * 1.15
-        mu_sot = team_a_stats['attack_sot'] * team_h_stats['defense_sot']
+        # Expected averages
+        exp_goals_h = poisson.mean(lambda_goals_home)
+        exp_goals_a = poisson.mean(mu_goals_away)
+
+        exp_corners_h = poisson.mean(lambda_corners_home)
+        exp_corners_a = poisson.mean(mu_corners_away)
+
+        exp_sot_h = poisson.mean(lambda_sot_home)
+        exp_sot_a = poisson.mean(mu_sot_away)
 
         predictions = {
-            "Outcomes (1/X/2)": {
-                "Home Win (1)": f"{prob_home_win * 100:.2f}%",
-                "Draw (X)": f"{prob_draw * 100:.2f}%",
-                "Away Win (2)": f"{prob_away_win * 100:.2f}%"
+            "Goals": {
+                "Home Goals": round(exp_goals_h, 2),
+                "Away Goals": round(exp_goals_a, 2),
+                "Total Goals": round(exp_goals_h + exp_goals_a, 2)
             },
-            "Top 3 Correct Scores": {
-                f"Rank {i+1}": f"{score} ({pct})" for i, (score, pct) in enumerate(top_scores)
+            "Corners": {
+                "Home Corners": round(exp_corners_h, 2),
+                "Away Corners": round(exp_corners_a, 2),
+                "Total Corners": round(exp_corners_h + exp_corners_a, 2)
             },
-            "Expected Totals": {
-                "Home Goals": round(lambda_goals, 2),
-                "Away Goals": round(mu_goals, 2),
-                "Home Corners": round(lambda_corners, 1),
-                "Away Corners": round(mu_corners, 1),
-                "Home Shots on Target": round(lambda_sot, 1),
-                "Away Shots on Target": round(mu_sot, 1)
+            "Shots on Target": {
+                "Home Shots on Target": round(exp_sot_h, 2),
+                "Away Shots on Target": round(exp_sot_a, 2),
+                "Total Shots on Target": round(exp_sot_h + exp_sot_a, 2)
             }
         }
         return predictions
 
-# --- RUNNING THE MOCK NETHERLANDS VS MOROCCO TEST ---
+
+# --- STREAMLIT USER INTERFACE ---
 if __name__ == "__main__":
+    st.set_page_config(page_title="V2 Football Prediction Model", layout="centered")
+    
+    st.title("⚽ V2 Football Prediction Model")
+    st.write("Dixon-Coles & Poisson Distribution Match Stats Engine")
+
     model = FootballPredictionModel()
 
     netherlands_profile = {
-        'attack_goals': 1.35,   'defense_goals': 0.95, 
-        'attack_corners': 5.0,  'defense_corners': 8.0,
-        'attack_sot': 5.0,      'defense_sot': 4.0
+        'attack_goals': 1.35, 'defense_goals': 1.00,
+        'attack_corners': 5.0, 'defense_corners': 4.0,
+        'attack_sot': 5.0, 'defense_sot': 4.0,
     }
 
     morocco_profile = {
-        'attack_goals': 1.20,   'defense_goals': 1.05, 
-        'attack_corners': 8.0,  'defense_corners': 5.0,
-        'attack_sot': 6.0,      'defense_sot': 3.5
+        'attack_goals': 1.20, 'defense_goals': 1.10,
+        'attack_corners': 8.0, 'defense_corners': 3.5,
+        'attack_sot': 6.0, 'defense_sot': 3.5,
     }
 
     result = model.predict_match_events(netherlands_profile, morocco_profile)
+
+    st.subheader("Match Predictions (Mock Netherlands vs Morocco)")
     
-    for category, stats in result.items():
-        print(f"\n🔹 {category}:")
-        for key, val in stats.items():
-            print(f"  {key}: {val}")
-      
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("### ⚽ Goals")
+        for k, v in result["Goals"].items():
+            st.metric(label=k, value=v)
+
+    with col2:
+        st.markdown("### 🚩 Corners")
+        for k, v in result["Corners"].items():
+            st.metric(label=k, value=v)
+
+    with col3:
+        st.markdown("### 🎯 Shots on Target")
+        for k, v in result["Shots on Target"].items():
+            st.metric(label=k, value=v)
+    
